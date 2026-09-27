@@ -1,310 +1,289 @@
 <!DOCTYPE html>
 <html lang="tr">
+
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>TR-VLM — Model Karşılaştırma</title>
+    <title>Model Karşılaştırma</title>
     <link rel="stylesheet" href="style.css">
     <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&display=swap" rel="stylesheet">
     <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.0/css/all.min.css">
 </head>
+
 <body>
 
-<!-- Edit Model Modal -->
-<div class="modal-overlay hidden" id="edit-modal-overlay">
-    <div class="modal">
-        <div class="modal-header">
-            <span><i class="fa-solid fa-pen-to-square"></i> Model Düzenle</span>
-            <button class="modal-close" id="modal-close"><i class="fa-solid fa-xmark"></i></button>
-        </div>
-        <div class="modal-body">
-            <input type="hidden" id="edit-key">
-            <div class="form-group">
-                <label>Gösterilecek İsim</label>
-                <input type="text" id="edit-name" class="form-input" placeholder="Model adı">
+    <!-- Edit Model Modal -->
+    <div class="modal-overlay hidden" id="edit-modal-overlay">
+        <div class="modal">
+            <div class="modal-header">
+                <span><i class="fa-solid fa-pen-to-square"></i> Model Düzenle</span>
+                <button class="modal-close" id="modal-close"><i class="fa-solid fa-xmark"></i></button>
             </div>
-            <div class="form-group">
-                <label>Model Yolu / HuggingFace ID</label>
-                <input type="text" id="edit-path" class="form-input" placeholder="/home/... veya org/repo">
+            <div class="modal-body">
+                <input type="hidden" id="edit-key">
+                <div class="form-group">
+                    <label>Gösterilecek İsim</label>
+                    <input type="text" id="edit-name" class="form-input" placeholder="Model adı">
+                </div>
+                <div class="form-group">
+                    <label>Model Yolu / HuggingFace ID</label>
+                    <input type="text" id="edit-path" class="form-input" placeholder="/home/... veya org/repo">
+                </div>
+                <div class="form-group">
+                    <label>Model Ailesi</label>
+                    <select id="edit-family" class="form-input"></select>
+                </div>
+                <p id="edit-status" class="status-msg"></p>
             </div>
-            <div class="form-group">
-                <label>Model Ailesi</label>
-                <select id="edit-family" class="form-input"></select>
-            </div>
-            <p id="edit-status" class="status-msg"></p>
-        </div>
-        <div class="modal-footer">
-            <button class="btn-ghost" id="modal-cancel">İptal</button>
-            <button class="btn-primary btn-sm" id="modal-save">
-                <i class="fa-solid fa-floppy-disk"></i> Kaydet
-            </button>
-        </div>
-    </div>
-</div>
-
-<div class="bg-orbs" aria-hidden="true">
-    <div class="orb orb-1"></div>
-    <div class="orb orb-2"></div>
-    <div class="orb orb-3"></div>
-</div>
-
-<!-- Landing Screen -->
-<div class="landing-screen" id="landing-screen">
-    <div class="landing-inner">
-
-        <div class="landing-logo">
-            <img class="logo-icon" src="TR_VLM_Icon.png" alt="TR-VLM">
-            <span class="landing-logo-name">TR-VLM</span>
-        </div>
-
-        <h1 class="landing-title">Görsel yükle,<br><span id="typewriter-text"></span><span class="typewriter-cursor" id="typewriter-cursor"></span></h1>
-
-        <!-- Upload -->
-        <div class="landing-upload" id="landing-drop-zone">
-            <input type="file" id="landing-file-input" accept="image/*" hidden>
-            <div class="landing-upload-inner" id="landing-upload-inner">
-                <i class="fa-solid fa-cloud-arrow-up"></i>
-                <span>Görsel yükleyin</span>
-                <span class="landing-hint">Sürükleyip bırakın ya da tıklayın &nbsp;·&nbsp; PNG, JPG, WebP</span>
-            </div>
-            <img id="landing-preview" class="landing-preview-img hidden" alt="">
-            <button id="landing-remove-img" class="remove-img-btn hidden" title="Değiştir">
-                <i class="fa-solid fa-xmark"></i>
-            </button>
-        </div>
-
-        <!-- Model selection -->
-        <div class="landing-section">
-            <div class="landing-section-label">
-                <i class="fa-solid fa-layer-group"></i> Model Seç
-            </div>
-            <div class="landing-chips" id="landing-model-chips">
-                <div class="landing-loading"><div class="spinner"></div> Yükleniyor...</div>
-            </div>
-        </div>
-
-        <!-- Optional prompt -->
-        <div class="landing-section">
-            <div class="landing-section-label">
-                <i class="fa-solid fa-comment-dots"></i> Sorgu
-                <span class="label-opt">isteğe bağlı</span>
-            </div>
-            <textarea id="landing-prompt" class="landing-textarea" placeholder="Görüntü hakkında soru sorun..." rows="2"></textarea>
-        </div>
-
-        <!-- Compare -->
-        <button class="btn-compare landing-compare-btn" id="landing-compare-btn" disabled>
-            <i class="fa-solid fa-code-compare"></i>
-            <span>Karşılaştır</span>
-            <kbd class="kbd-hint">Ctrl ↵</kbd>
-        </button>
-
-    </div>
-</div>
-
-<div class="app" id="app-shell">
-
-    <!-- ── History Sidebar ── -->
-    <aside class="history-sidebar" id="history-sidebar">
-        <div class="history-header">
-            <div class="history-logo">
-                <img class="logo-icon" src="TR_VLM_Icon.png" alt="TR-VLM">
-                <span class="history-app-name">TR-VLM</span>
-            </div>
-            <div class="history-header-actions">
-                <button class="icon-btn" id="history-new-btn" title="Yeni Karşılaştırma">
-                    <i class="fa-solid fa-pen-to-square"></i>
-                </button>
-                <button class="icon-btn" id="history-collapse-btn" title="Geçmişi Kapat">
-                    <i class="fa-solid fa-chevron-left"></i>
+            <div class="modal-footer">
+                <button class="btn-ghost" id="modal-cancel">İptal</button>
+                <button class="btn-primary btn-sm" id="modal-save">
+                    <i class="fa-solid fa-floppy-disk"></i> Kaydet
                 </button>
             </div>
         </div>
+    </div>
 
-        <div class="history-search-wrap">
-            <div class="history-search-box">
-                <i class="fa-solid fa-magnifying-glass"></i>
-                <input type="text" id="history-search" placeholder="Geçmişte ara...">
-            </div>
-        </div>
+    <div class="bg-orbs" aria-hidden="true">
+        <div class="orb orb-1"></div>
+        <div class="orb orb-2"></div>
+        <div class="orb orb-3"></div>
+    </div>
 
-        <div class="history-list" id="history-list">
-            <div class="history-empty-state">
-                <i class="fa-regular fa-clock"></i>
-                <span>Henüz karşılaştırma yok</span>
-            </div>
-        </div>
+    <!-- Landing Screen -->
+    <div class="landing-screen" id="landing-screen">
+        <div class="landing-inner">
 
-        <div class="history-footer">
-            <button class="history-clear-btn" id="history-clear-btn">
-                <i class="fa-solid fa-trash"></i> Geçmişi Temizle
-            </button>
-        </div>
-    </aside>
+            <h1 class="landing-title">Görsel yükle, analiz et.</h1>
+            <p class="landing-subtitle" id="landing-subtitle"></p>
 
-    <!-- ── Controls Sidebar ── -->
-    <aside class="sidebar">
-        <div class="sidebar-header">
-            <button class="icon-btn" id="history-expand-btn" title="Geçmişi Aç">
-                <i class="fa-solid fa-clock-rotate-left"></i>
-            </button>
-            <div class="logo">
-                <img class="logo-icon" src="TR_VLM_Icon.png" alt="TR-VLM">
-                <div>
-                    <div class="logo-title">TR-VLM</div>
-                    <div class="logo-sub">Model Karşılaştırma</div>
+            <!-- Upload -->
+            <div class="landing-upload" id="landing-drop-zone">
+                <input type="file" id="landing-file-input" accept="image/*" hidden>
+                <div class="landing-upload-inner" id="landing-upload-inner">
+                    <i class="fa-solid fa-cloud-arrow-up"></i>
+                    <span>Görsel yükleyin</span>
+                    <span class="landing-hint">Sürükleyip bırakın ya da tıklayın &nbsp;·&nbsp; PNG, JPG, WebP</span>
                 </div>
-            </div>
-        </div>
-
-        <div class="sidebar-body">
-            <!-- Image Upload -->
-            <div class="section-label">Girdi</div>
-            <div class="upload-zone" id="drop-zone">
-                <input type="file" id="file-input" accept="image/*" hidden>
-                <div class="upload-placeholder" id="upload-placeholder">
-                    <i class="fa-solid fa-image"></i>
-                    <span>Resim yükleyin</span>
-                    <span class="upload-hint">veya sürükleyip bırakın</span>
-                </div>
-                <img id="image-preview" class="hidden" alt="Önizleme">
-                <button id="remove-image" class="hidden remove-img-btn" title="Kaldır">
+                <img id="landing-preview" class="landing-preview-img hidden" alt="">
+                <button id="landing-remove-img" class="remove-img-btn hidden" title="Değiştir">
                     <i class="fa-solid fa-xmark"></i>
                 </button>
             </div>
 
-            <!-- Prompt -->
-            <div class="form-group" style="margin-top:1.2rem">
-                <label>Sorgu <span class="label-opt">isteğe bağlı</span></label>
-                <textarea id="prompt-input" placeholder="Görüntüyü açıklayın..." rows="2"></textarea>
-            </div>
-
-            <!-- Model List -->
-            <div class="section-label" style="margin-top:1.5rem">
-                <span><i class="fa-solid fa-layer-group"></i> Modeller</span>
-                <button class="btn-ghost btn-xs" id="toggle-add-model">
-                    <i class="fa-solid fa-plus"></i> Ekle
-                </button>
-            </div>
-
-            <!-- Add Model Panel -->
-            <div class="collapsible" id="add-model-body">
-                <div class="inset-card">
-                    <div class="form-group">
-                        <label>İsim</label>
-                        <input type="text" id="custom-name" class="form-input" placeholder="Örn: Qwen3.5-9B">
+            <!-- Model selection -->
+            <div class="landing-section">
+                <div class="landing-section-label">
+                    Model Seç
+                </div>
+                <div class="landing-chips" id="landing-model-chips">
+                    <div class="landing-loading">
+                        <div class="spinner"></div> Yükleniyor...
                     </div>
-                    <div class="form-group">
-                        <label>Yol / HF ID</label>
-                        <input type="text" id="custom-path" class="form-input" placeholder="/home/... veya org/repo">
-                    </div>
-                    <div class="form-group">
-                        <label>Aile</label>
-                        <select id="custom-family" class="form-input"><option>Yükleniyor...</option></select>
-                        <span class="hint" id="family-desc-hint"></span>
-                    </div>
-                    <button id="add-model-btn" class="btn-secondary btn-sm" style="width:100%">
-                        <i class="fa-solid fa-plus"></i> Kütüphaneye Ekle
-                    </button>
-                    <p id="add-model-status" class="status-msg"></p>
                 </div>
             </div>
 
-            <!-- Model Chips -->
-            <div class="model-list" id="model-groups">
-                <div class="loader-row"><div class="spinner"></div> Yükleniyor...</div>
-            </div>
-
-            <!-- Families Section -->
-            <div class="section-label" style="margin-top:1rem">
-                <span><i class="fa-solid fa-puzzle-piece"></i> Model Aileleri</span>
-                <button class="btn-ghost btn-xs" id="toggle-add-family">
-                    <i class="fa-solid fa-plus"></i> Ekle
-                </button>
-            </div>
-
-            <div class="collapsible" id="add-family-body">
-                <div class="inset-card">
-                    <p class="hint" style="margin-bottom:0.8rem"><i class="fa-solid fa-circle-info"></i> Yeni mimari tanımlayın. Pip gereksinimleri ilk yüklemede otomatik kurulur.</p>
-                    <div class="form-group">
-                        <label>Aile Adı</label>
-                        <input type="text" id="family-name" class="form-input" placeholder="Örn: InternVL2">
-                    </div>
-                    <div class="form-group">
-                        <label>Açıklama</label>
-                        <input type="text" id="family-description" class="form-input" placeholder="Kısa açıklama">
-                    </div>
-                    <div class="form-group">
-                        <label>Strateji</label>
-                        <select id="family-strategy" class="form-input">
-                            <option value="pipeline">HF Pipeline (BLIP, GIT, vb.)</option>
-                            <option value="causal_lm">AutoModel CausalLM</option>
-                            <option value="blip2">BLIP-2</option>
-                            <option value="internvl">InternVL / InternVL2</option>
-                        </select>
-                    </div>
-                    <div class="form-group">
-                        <label>Pip Gereksinimleri</label>
-                        <input type="text" id="family-requirements" class="form-input" placeholder="timm, einops, ...">
-                        <span class="hint">Virgülle ayırın</span>
-                    </div>
-                    <button id="add-family-btn" class="btn-secondary btn-sm" style="width:100%">
-                        <i class="fa-solid fa-floppy-disk"></i> Kaydet
-                    </button>
-                    <p id="add-family-status" class="status-msg"></p>
-                    <div id="custom-families-list" style="margin-top:0.8rem"></div>
+            <!-- Optional prompt -->
+            <div class="landing-section">
+                <div class="landing-section-label">
+                    Sorgu
+                    <span class="label-opt">isteğe bağlı</span>
                 </div>
+                <textarea id="landing-prompt" class="landing-textarea" placeholder="Görüntü hakkında soru sorun..."
+                    rows="1" maxlength="30"></textarea>
             </div>
+
+            <!-- Compare -->
+            <button class="btn-compare landing-compare-btn" id="landing-compare-btn" disabled>
+                <i class="fa-solid fa-play"></i>
+                <span>Analizi Başlat</span>
+            </button>
 
         </div>
+    </div>
 
-        <!-- Compare Button -->
-        <div class="sidebar-footer">
-            <button id="compare-btn" class="btn-compare" disabled>
-                <i class="fa-solid fa-code-compare"></i>
-                <span>Karşılaştır</span>
-                <kbd class="kbd-hint">Ctrl ↵</kbd>
+    <div class="app" id="app-shell">
+
+        <!-- ── History Sidebar ── -->
+        <aside class="history-sidebar" id="history-sidebar">
+            <div class="history-header">
+                <span class="history-header-label">Geçmiş</span>
+                <div class="history-header-actions">
+                    <button class="icon-btn" id="history-home-btn" title="Ana Sayfa">
+                        <i class="fa-solid fa-house"></i>
+                    </button>
+                    <button class="icon-btn" id="history-collapse-btn" title="Geçmişi Kapat">
+                        <i class="fa-solid fa-chevron-left"></i>
+                    </button>
+                </div>
+            </div>
+
+            <div class="history-new-chat-wrap">
+                <button class="history-new-chat-btn" id="history-new-chat-btn">
+                    <i class="fa-solid fa-plus"></i> Yeni Sohbet
+                </button>
+            </div>
+
+            <div class="history-search-wrap">
+                <div class="history-search-box">
+                    <i class="fa-solid fa-magnifying-glass"></i>
+                    <input type="text" id="history-search" placeholder="Geçmişte ara...">
+                </div>
+            </div>
+
+            <div class="history-list" id="history-list">
+                <div class="history-empty-state">
+                    <i class="fa-regular fa-clock"></i>
+                    <span>Henüz karşılaştırma yok</span>
+                </div>
+            </div>
+
+            <div class="history-footer">
+                <button class="history-clear-btn" id="history-clear-btn">
+                    <i class="fa-solid fa-trash"></i> Geçmişi Temizle
+                </button>
+            </div>
+        </aside>
+
+        <!-- ── Main Content ── -->
+        <main class="main">
+            <!-- Top-left and bottom-right standalone controls (header removed) -->
+            <button class="icon-btn" id="history-expand-btn" title="Geçmişi Aç" aria-label="Geçmişi Aç">
+                <i class="fa-solid fa-clock-rotate-left"></i>
             </button>
-            <p class="auto-hint"><i class="fa-solid fa-microchip"></i> Modeller sırayla yüklenerek VRAM tasarrufu sağlanır</p>
+            <button id="settings-btn" title="Ayarlar" aria-label="Ayarlar">
+                <i class="fa-solid fa-sliders"></i>
+            </button>
+            <!-- Hidden title elements preserved for JS usage -->
+            <h1 id="page-title" style="display:none">Sonuçlar</h1>
+            <p id="page-sub" style="display:none">Modellerin çıktıları burada görünecek</p>
+
+            <!-- Progress removed — per UI spec (inline model loading bubbles used instead) -->
+
+            <!-- Chat feed -->
+            <div class="chat-feed" id="chat-feed"></div>
+
+            <!-- Empty state -->
+            <div class="empty-state" id="results-empty">
+                <div class="empty-icon-wrap">
+                    <div class="empty-icon-glow"></div>
+                    <div class="empty-icon"><i class="fa-solid fa-comments"></i></div>
+                </div>
+                <h3>Sohbete başlayın</h3>
+                <p>Görsel yükleyin, modelleri seçin ve analizi başlatın.</p>
+            </div>
+
+            <!-- Fixed input console -->
+            <div class="input-console">
+                <div class="upload-zone" id="drop-zone">
+                    <input type="file" id="file-input" accept="image/*" hidden>
+                    <span class="upload-hint" id="upload-placeholder"><i class="fa-solid fa-image"></i></span>
+                    <div class="console-preview hidden" id="console-preview">
+                        <img id="image-preview" alt="Önizleme">
+                        <button id="remove-image" class="remove-img-btn hidden" title="Kaldır">
+                            <i class="fa-solid fa-xmark"></i>
+                        </button>
+                    </div>
+                </div>
+                <div class="console-models-scroll">
+                    <div id="model-groups">
+                        <div class="loader-row">
+                            <div class="spinner"></div> Yükleniyor...
+                        </div>
+                    </div>
+                </div>
+                <div class="console-input-wrapper">
+                    <textarea id="prompt-input" placeholder="Görüntüyü açıklayın..." rows="1" maxlength="30"></textarea>
+                    <div id="char-counter">0/30</div>
+                </div>
+                <button id="compare-btn" class="btn-compare btn-icon console-send-btn" disabled>
+                    <i class="fa-solid fa-paper-plane"></i>
+                    <span class="sr-only">Analizi Başlat</span>
+                </button>
+            </div>
+        </main>
+    </div>
+
+    <!-- ── Management Drawer ── -->
+    <div class="drawer-overlay hidden" id="drawer-overlay"></div>
+    <aside class="management-drawer" id="management-drawer">
+        <div class="drawer-header">
+            <span class="drawer-title"><i class="fa-solid fa-sliders"></i> Model Yönetimi</span>
+            <button class="icon-btn" id="close-drawer-btn" title="Kapat"><i class="fa-solid fa-xmark"></i></button>
+        </div>
+        <div class="drawer-body">
+
+            <!-- Registered Models -->
+            <div class="drawer-section-label">Kayıtlı Modeller</div>
+            <div class="model-list" id="drawer-model-list">
+                <div class="loader-row">
+                    <div class="spinner"></div> Yükleniyor...
+                </div>
+            </div>
+
+            <!-- Add Model -->
+            <div class="drawer-section-label" style="margin-top:1.2rem">Model Ekle</div>
+            <div class="inset-card">
+                <div class="form-group">
+                    <label>İsim</label>
+                    <input type="text" id="custom-name" class="form-input" placeholder="Örn: Qwen3.5-9B">
+                </div>
+                <div class="form-group">
+                    <label>Yol / HF ID</label>
+                    <input type="text" id="custom-path" class="form-input" placeholder="/home/... veya org/repo">
+                </div>
+                <div class="form-group">
+                    <label>Aile</label>
+                    <select id="custom-family" class="form-input">
+                        <option>Yükleniyor...</option>
+                    </select>
+                    <span class="hint" id="family-desc-hint"></span>
+                </div>
+                <button id="add-model-btn" class="btn-secondary btn-sm" style="width:100%">
+                    <i class="fa-solid fa-plus"></i> Kütüphaneye Ekle
+                </button>
+                <p id="add-model-status" class="status-msg"></p>
+            </div>
+
+            <!-- Add Family -->
+            <div class="drawer-section-label" style="margin-top:1.2rem">Model Ailesi Ekle</div>
+            <div class="inset-card">
+                <p class="hint" style="margin-bottom:0.8rem"><i class="fa-solid fa-circle-info"></i> Yeni mimari
+                    tanımlayın. Pip gereksinimleri ilk yüklemede otomatik kurulur.</p>
+                <div class="form-group">
+                    <label>Aile Adı</label>
+                    <input type="text" id="family-name" class="form-input" placeholder="Örn: InternVL2">
+                </div>
+                <div class="form-group">
+                    <label>Açıklama</label>
+                    <input type="text" id="family-description" class="form-input" placeholder="Kısa açıklama">
+                </div>
+                <div class="form-group">
+                    <label>Strateji</label>
+                    <select id="family-strategy" class="form-input">
+                        <option value="pipeline">HF Pipeline (BLIP, GIT, vb.)</option>
+                        <option value="causal_lm">AutoModel CausalLM</option>
+                        <option value="blip2">BLIP-2</option>
+                        <option value="internvl">InternVL / InternVL2</option>
+                    </select>
+                </div>
+                <div class="form-group">
+                    <label>Pip Gereksinimleri</label>
+                    <input type="text" id="family-requirements" class="form-input" placeholder="timm, einops, ...">
+                    <span class="hint">Virgülle ayırın</span>
+                </div>
+                <button id="add-family-btn" class="btn-secondary btn-sm" style="width:100%">
+                    <i class="fa-solid fa-floppy-disk"></i> Kaydet
+                </button>
+                <p id="add-family-status" class="status-msg"></p>
+                <div id="custom-families-list" style="margin-top:0.8rem"></div>
+            </div>
+
         </div>
     </aside>
 
-    <!-- ── Main Content ── -->
-    <main class="main">
-        <div class="main-header">
-            <div class="main-header-left">
-                <h1 class="page-title" id="page-title">Sonuçlar</h1>
-                <p class="page-sub" id="page-sub">Modellerin çıktıları burada görünecek</p>
-            </div>
-        </div>
-
-        <!-- Progress -->
-        <div class="progress-bar-wrap hidden" id="progress-container">
-            <div class="progress-meta">
-                <span id="progress-text">Hazırlanıyor...</span>
-                <span id="progress-count" class="progress-count">0 / 0</span>
-            </div>
-            <div class="progress-track">
-                <div class="progress-fill" id="progress-fill"></div>
-            </div>
-        </div>
-
-        <!-- Result grid -->
-        <div class="results-grid" id="result-cards"></div>
-
-        <!-- Empty state -->
-        <div class="empty-state" id="results-empty">
-            <div class="empty-icon-wrap">
-                <div class="empty-icon-glow"></div>
-                <div class="empty-icon"><i class="fa-solid fa-flask-vial"></i></div>
-            </div>
-            <h3>Karşılaştırmaya hazır</h3>
-            <p>Bir görsel yükleyin, modelleri seçin ve Karşılaştır düğmesine basın.</p>
-        </div>
-    </main>
-</div>
-
-<div class="toast-container" id="toast-container"></div>
-<script src="main.js"></script>
+    <div class="toast-container" id="toast-container"></div>
+    <script src="main.js"></script>
 </body>
+
 </html>

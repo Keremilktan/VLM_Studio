@@ -27,14 +27,19 @@ document.addEventListener('DOMContentLoaded', () => {
         }).catch(() => showToast('Kopyalama başarısız', 'error'));
     }
 
-    // ─── Typewriter text reveal ───
+    // ─── Typewriter text reveal (cancellable) ───
+    let activeTypewriters = [];
     function typewriterReveal(el, text) {
         const tokens = text.split(/(\s+)/);
         const delay = Math.max(8, Math.min(38, 1600 / tokens.length));
         let i = 0;
+        let cancelled = false;
+        const handle = { cancel() { cancelled = true; el.textContent = text; el.classList.remove('typing-active'); } };
+        activeTypewriters.push(handle);
         el.textContent = '';
         el.classList.add('typing-active');
         function step() {
+            if (cancelled) return;
             if (i < tokens.length) {
                 el.textContent += tokens[i++];
                 setTimeout(step, delay);
@@ -43,6 +48,11 @@ document.addEventListener('DOMContentLoaded', () => {
             }
         }
         setTimeout(step, 60);
+        return handle;
+    }
+    function cancelAllTypewriters() {
+        activeTypewriters.forEach(h => h.cancel());
+        activeTypewriters = [];
     }
 
     // ─── Elements ───
@@ -50,27 +60,39 @@ document.addEventListener('DOMContentLoaded', () => {
     const fileInput       = document.getElementById('file-input');
     const uploadPH        = document.getElementById('upload-placeholder');
     const imagePreview    = document.getElementById('image-preview');
+    const consolePreview  = document.getElementById('console-preview');
     const removeImageBtn  = document.getElementById('remove-image');
     const compareBtn      = document.getElementById('compare-btn');
     const promptInput     = document.getElementById('prompt-input');
+    const charCounter     = document.getElementById('char-counter');
     const modelGroups     = document.getElementById('model-groups');
     const resultsEmpty    = document.getElementById('results-empty');
     const progressWrap    = document.getElementById('progress-container');
     const progressText    = document.getElementById('progress-text');
     const progressCount   = document.getElementById('progress-count');
     const progressFill    = document.getElementById('progress-fill');
-    const resultCards     = document.getElementById('result-cards');
+    const chatFeed        = document.getElementById('chat-feed');
 
     let currentFile    = null;
     let selectedModels = new Set();
     let isComparing    = false;
     let familiesCache  = {};
 
-    // pending data for history capture
-    let pendingResults       = [];
-    let pendingImageDataUrl  = null;
-    let pendingPrompt        = '';
-    let activeHistoryId      = null;
+    // Session state
+    const SESSIONS_KEY = 'vlm-studio-sessions';
+    const MAX_SESSIONS = 60;
+    const MAX_MESSAGES = 50;
+    let activeSessionId    = null;
+    let pendingResults     = [];
+    let pendingImageDataUrl = null;
+    let pendingPrompt      = '';
+    let currentMsgGroupEl  = null;
+    let currentResultsEl   = null;
+    let currentAbort       = null;   // AbortController for active fetch
+    let comparisonEpoch    = 0;      // unique ID per comparison run
+
+    // Clear old history format
+    localStorage.removeItem('vlm-studio-history');
 
     // ─── Families ───
     async function loadFamilies() {
@@ -146,54 +168,51 @@ document.addEventListener('DOMContentLoaded', () => {
                 return;
             }
 
-            for (const [groupName, models] of Object.entries(grouped)) {
-                const titleEl = document.createElement('div');
-                titleEl.className = 'model-group-title';
-                titleEl.textContent = groupName;
-                modelGroups.appendChild(titleEl);
+            // Flatten all groups and render only model rows (no group headings)
+            const allModels = [];
+            for (const models of Object.values(grouped)) { allModels.push(...models); }
 
-                models.forEach(m => {
-                    const row = document.createElement('label');
-                    row.className = 'model-row' + (selectedModels.has(m.key) ? ' selected' : '');
-                    row.innerHTML = `
-                        <input type="checkbox" value="${m.key}" ${selectedModels.has(m.key) ? 'checked' : ''}>
-                        <span class="model-check"><i class="fa-solid fa-check"></i></span>
-                        <span class="model-name">${m.name}</span>
-                        <div class="model-actions">
-                            <button class="action-btn edit-btn" title="Düzenle" onclick="event.preventDefault()">
-                                <i class="fa-solid fa-pen"></i>
-                            </button>
-                            <button class="action-btn del del-btn" title="Sil" onclick="event.preventDefault()">
-                                <i class="fa-solid fa-trash"></i>
-                            </button>
-                        </div>`;
+            allModels.forEach(m => {
+                const row = document.createElement('label');
+                row.className = 'model-row' + (selectedModels.has(m.key) ? ' selected' : '');
+                row.innerHTML = `
+                    <input type="checkbox" value="${m.key}" ${selectedModels.has(m.key) ? 'checked' : ''}>
+                    <span class="model-check"><i class="fa-solid fa-check"></i></span>
+                    <span class="model-name">${m.name}</span>
+                    <div class="model-actions">
+                        <button class="action-btn edit-btn" title="Düzenle" onclick="event.preventDefault()">
+                            <i class="fa-solid fa-pen"></i>
+                        </button>
+                        <button class="action-btn del del-btn" title="Sil" onclick="event.preventDefault()">
+                            <i class="fa-solid fa-trash"></i>
+                        </button>
+                    </div>`;
 
-                    const cb = row.querySelector('input');
-                    cb.addEventListener('change', () => {
-                        if (cb.checked) { selectedModels.add(m.key); row.classList.add('selected'); }
-                        else { selectedModels.delete(m.key); row.classList.remove('selected'); }
-                        updateCompareBtn();
-                    });
-
-                    row.querySelector('.edit-btn').addEventListener('click', (e) => {
-                        e.preventDefault(); e.stopPropagation();
-                        openEditModal(m.key, m.name);
-                    });
-
-                    row.querySelector('.del-btn').addEventListener('click', async (e) => {
-                        e.preventDefault(); e.stopPropagation();
-                        if (!confirm(`"${m.name}" modelini kaldırmak istiyor musunuz?`)) return;
-                        const fd = new FormData();
-                        fd.append('key', m.key);
-                        await fetch('/api/models/remove', { method: 'DELETE', body: fd });
-                        selectedModels.delete(m.key);
-                        updateCompareBtn();
-                        await loadModels();
-                    });
-
-                    modelGroups.appendChild(row);
+                const cb = row.querySelector('input');
+                cb.addEventListener('change', () => {
+                    if (cb.checked) { selectedModels.add(m.key); row.classList.add('selected'); }
+                    else { selectedModels.delete(m.key); row.classList.remove('selected'); }
+                    updateCompareBtn();
                 });
-            }
+
+                row.querySelector('.edit-btn').addEventListener('click', (e) => {
+                    e.preventDefault(); e.stopPropagation();
+                    openEditModal(m.key, m.name);
+                });
+
+                row.querySelector('.del-btn').addEventListener('click', async (e) => {
+                    e.preventDefault(); e.stopPropagation();
+                    if (!confirm(`"${m.name}" modelini kaldırmak istiyor musunuz?`)) return;
+                    const fd = new FormData();
+                    fd.append('key', m.key);
+                    await fetch('/api/models/remove', { method: 'DELETE', body: fd });
+                    selectedModels.delete(m.key);
+                    updateCompareBtn();
+                    await loadModels();
+                });
+
+                modelGroups.appendChild(row);
+            });
         } catch (e) {
             modelGroups.innerHTML = '<p style="color:var(--red);font-size:0.8rem">Model listesi yüklenemedi.</p>';
         }
@@ -303,6 +322,23 @@ document.addEventListener('DOMContentLoaded', () => {
         compareBtn.disabled = !(currentFile && selectedModels.size > 0 && !isComparing);
     }
 
+    function updateCharCounter() {
+        if (charCounter) {
+            const length = promptInput.value.length;
+            charCounter.textContent = `${length}/30`;
+        }
+    }
+
+    function enforcePromptLimit(el) {
+        if (el && el.value.length > 30) {
+            el.value = el.value.slice(0, 30);
+        }
+        updateCharCounter();
+    }
+
+    promptInput.addEventListener('input', () => enforcePromptLimit(promptInput));
+    updateCharCounter();
+
     ['dragenter', 'dragover', 'dragleave', 'drop'].forEach(ev =>
         dropZone.addEventListener(ev, e => { e.preventDefault(); e.stopPropagation(); }));
     ['dragenter', 'dragover'].forEach(ev =>
@@ -321,6 +357,7 @@ document.addEventListener('DOMContentLoaded', () => {
             reader.readAsDataURL(files[0]);
             reader.onloadend = () => {
                 imagePreview.src = reader.result;
+                consolePreview.classList.remove('hidden');
                 uploadPH.classList.add('hidden');
                 imagePreview.classList.remove('hidden');
                 removeImageBtn.classList.remove('hidden');
@@ -335,57 +372,110 @@ document.addEventListener('DOMContentLoaded', () => {
         fileInput.value = '';
         imagePreview.src = '';
         uploadPH.classList.remove('hidden');
+        consolePreview.classList.add('hidden');
         imagePreview.classList.add('hidden');
         removeImageBtn.classList.add('hidden');
         updateCompareBtn();
     });
 
+    function appendUserBubble(imageSrc, promptText, modelNames) {
+        const msgGroup = document.createElement('div');
+        msgGroup.className = 'chat-message-group';
+        msgGroup.innerHTML = `
+            <div class="user-input-bubble">
+                <img class="chat-user-image" src="${imageSrc}" alt="Görsel">
+                <div class="chat-user-content">
+                    <span class="chat-user-prompt">${promptText}</span>
+                    <span class="chat-user-models">${modelNames.join(', ')}</span>
+                </div>
+            </div>
+            <div class="chat-model-results"></div>`;
+        chatFeed.appendChild(msgGroup);
+        const img = msgGroup.querySelector('.chat-user-image');
+        img.addEventListener('click', () => {
+            openLightbox(imageSrc);
+        });
+        msgGroup.scrollIntoView({ behavior: 'smooth', block: 'end' });
+        return msgGroup;
+    }
+
     // ─── Compare ───
     compareBtn.addEventListener('click', runComparison);
 
+    function finalizeOldLoadingCards() {
+        // Remove any lingering loading cards from previous runs
+        chatFeed.querySelectorAll('.result-card.loading').forEach(card => card.remove());
+    }
+
     async function runComparison() {
-        if (!currentFile || selectedModels.size === 0 || isComparing) return;
+        if (!currentFile || selectedModels.size === 0) return;
+
+        // ── Abort previous comparison if still running ──
+        if (currentAbort) {
+            currentAbort.abort();
+            currentAbort = null;
+        }
+        cancelAllTypewriters();
+        finalizeOldLoadingCards();
 
         isComparing = true;
-        activeHistoryId = null;
+        comparisonEpoch++;
+        const myEpoch = comparisonEpoch;
         pendingResults = [];
         pendingImageDataUrl = imagePreview.src || null;
-        pendingPrompt = promptInput.value.trim();
+        pendingPrompt = promptInput.value.slice(0, 30).trim();
         compareBtn.disabled = true;
         compareBtn.querySelector('span').textContent = 'İşleniyor...';
         compareBtn.querySelector('i').className = 'fa-solid fa-spinner fa-spin';
-        document.querySelectorAll('.history-item').forEach(el => el.classList.remove('active'));
+
+        // Auto-create session if none active
+        if (!activeSessionId) {
+            activeSessionId = Date.now().toString(36) + Math.random().toString(36).slice(2);
+        }
 
         resultsEmpty.classList.add('hidden');
-        progressWrap.classList.remove('hidden');
-        resultCards.innerHTML = '';
-        progressFill.style.width = '0%';
+        if (progressWrap) progressWrap.classList.remove('hidden');
+        if (progressFill) progressFill.style.width = '0%';
+
+        const modelNames = Array.from(selectedModels);
+        const promptDisplay = pendingPrompt || 'Görüntüyü açıkla';
+        const msgGroup = appendUserBubble(pendingImageDataUrl, promptDisplay, modelNames);
+        currentMsgGroupEl = msgGroup;
+        currentResultsEl = msgGroup.querySelector('.chat-model-results');
+
+        msgGroup.scrollIntoView({ behavior: 'smooth', block: 'end' });
 
         const fd = new FormData();
         fd.append('image', currentFile);
         fd.append('models', JSON.stringify(Array.from(selectedModels)));
-        if (promptInput.value.trim()) fd.append('prompt', promptInput.value.trim());
+        if (pendingPrompt) fd.append('prompt', pendingPrompt);
+
+        const abortCtrl = new AbortController();
+        currentAbort = abortCtrl;
 
         try {
-            const response = await fetch('/api/compare', { method: 'POST', body: fd });
+            const response = await fetch('/api/compare', { method: 'POST', body: fd, signal: abortCtrl.signal });
             const reader = response.body.getReader();
             const decoder = new TextDecoder();
             let buffer = '';
 
             while (true) {
                 const { done, value } = await reader.read();
-                if (done) break;
+                if (done || myEpoch !== comparisonEpoch) break;
                 buffer += decoder.decode(value, { stream: true });
                 const lines = buffer.split('\n');
                 buffer = lines.pop();
                 for (const line of lines) {
+                    if (myEpoch !== comparisonEpoch) break;
                     if (line.startsWith('data: ')) {
-                        try { handleSSE(JSON.parse(line.slice(6))); } catch (_) {}
+                        try { handleSSE(JSON.parse(line.slice(6)), myEpoch); } catch (_) {}
                     }
                 }
             }
         } catch (err) {
-            resultCards.innerHTML += `
+            if (err.name === 'AbortError') return; // intentional abort, don't show error
+            if (myEpoch !== comparisonEpoch) return; // stale
+            currentResultsEl.innerHTML += `
                 <div class="result-card error">
                     <div class="result-card-header">
                         <div class="result-model-name"><i class="fa-solid fa-triangle-exclamation" style="color:var(--red)"></i> Bağlantı Hatası</div>
@@ -393,21 +483,27 @@ document.addEventListener('DOMContentLoaded', () => {
                     <div class="result-body"><div class="result-caption">${err.message}</div></div>
                 </div>`;
         } finally {
-            isComparing = false;
-            compareBtn.querySelector('span').textContent = 'Karşılaştır';
-            compareBtn.querySelector('i').className = 'fa-solid fa-code-compare';
-            updateCompareBtn();
+            if (myEpoch === comparisonEpoch) {
+                isComparing = false;
+                currentAbort = null;
+                compareBtn.querySelector('span').textContent = 'Analizi Başlat';
+                compareBtn.querySelector('i').className = 'fa-solid fa-play';
+                updateCompareBtn();
+            }
         }
     }
 
-    function handleSSE(data) {
+    function handleSSE(data, epoch) {
+        if (epoch !== comparisonEpoch) return; // stale event, ignore
+        const cardId = `card-${epoch}-${data.index}`;
+
         if (data.type === 'loading') {
-            progressText.textContent = `Yükleniyor: ${data.model_name}`;
-            progressCount.textContent = `${data.index + 1} / ${data.total}`;
+            if (progressText) progressText.textContent = `Yükleniyor: ${data.model_name}`;
+            if (progressCount) progressCount.textContent = `${data.index + 1} / ${data.total}`;
 
             const card = document.createElement('div');
             card.className = 'result-card loading';
-            card.id = `card-${data.index}`;
+            card.id = cardId;
             card.style.animationDelay = `${data.index * 0.06}s`;
             card.innerHTML = `
                 <div class="result-card-header">
@@ -422,16 +518,17 @@ document.addEventListener('DOMContentLoaded', () => {
                         <span class="typing-label">Model yükleniyor ve çıktı üretiliyor...</span>
                     </div>
                 </div>`;
-            resultCards.appendChild(card);
+            currentResultsEl.appendChild(card);
             card.scrollIntoView({ behavior: 'smooth', block: 'nearest' });
 
         } else if (data.type === 'result') {
+            if (epoch !== comparisonEpoch) return;
             const pct = ((data.index + 1) / data.total * 100).toFixed(0);
-            progressFill.style.width = pct + '%';
-            progressText.textContent = `Tamamlandı: ${data.model_name}`;
-            progressCount.textContent = `${data.index + 1} / ${data.total}`;
+            if (progressFill) progressFill.style.width = pct + '%';
+            if (progressText) progressText.textContent = `Tamamlandı: ${data.model_name}`;
+            if (progressCount) progressCount.textContent = `${data.index + 1} / ${data.total}`;
 
-            const card = document.getElementById(`card-${data.index}`);
+            const card = document.getElementById(cardId);
             if (card) {
                 const wordCount = data.caption.trim().split(/\s+/).filter(Boolean).length;
                 card.className = 'result-card success';
@@ -466,7 +563,8 @@ document.addEventListener('DOMContentLoaded', () => {
             pendingResults.push({ type: 'result', index: data.index, model_key: data.model_key, model_name: data.model_name, caption: data.caption, load_time: data.load_time, infer_time: data.infer_time });
 
         } else if (data.type === 'error') {
-            const card = document.getElementById(`card-${data.index}`);
+            if (epoch !== comparisonEpoch) return;
+            const card = document.getElementById(cardId);
             if (card) {
                 card.className = 'result-card error';
                 card.innerHTML = `
@@ -481,33 +579,132 @@ document.addEventListener('DOMContentLoaded', () => {
             pendingResults.push({ type: 'error', index: data.index, model_key: data.model_key || '', model_name: data.model_name, error: data.error });
 
         } else if (data.type === 'done') {
-            progressText.textContent = 'Tüm modeller tamamlandı';
-            progressFill.style.width = '100%';
+            if (epoch !== comparisonEpoch) return;
+            if (progressText) progressText.textContent = 'Tüm modeller tamamlandı';
+            if (progressFill) progressFill.style.width = '100%';
             if (pendingImageDataUrl && pendingResults.length > 0) {
                 createThumbnail(pendingImageDataUrl).then(thumb => {
-                    const id = Date.now().toString(36) + Math.random().toString(36).slice(2);
-                    addToHistory({
-                        id,
-                        timestamp: Date.now(),
-                        imageDataUrl: thumb,
-                        models: Array.from(selectedModels),
-                        modelNames: pendingResults.map(r => r.model_name).filter(Boolean),
-                        prompt: pendingPrompt,
-                        results: pendingResults.slice()
-                    });
-                    activeHistoryId = id;
-                    document.querySelectorAll('.history-item').forEach(el =>
-                        el.classList.toggle('active', el.dataset.id === id));
+                    saveSessionMessage(thumb);
                 });
             }
         }
     }
 
-    // ─── Add Model Toggle ───
-    document.getElementById('toggle-add-model').addEventListener('click', () => {
-        document.getElementById('add-model-body').classList.toggle('open');
-    });
+    function saveSessionMessage(thumb) {
+        const sessions = getSessions();
+        let session = sessions.find(s => s.id === activeSessionId);
+        const isNew = !session;
+        if (isNew) {
+            session = {
+                id: activeSessionId,
+                title: (pendingPrompt || pendingResults[0]?.model_name || 'Yeni Sohbet').slice(0, 60),
+                createdAt: Date.now(),
+                thumb: thumb,
+                messages: []
+            };
+        }
+        // Add user message
+        session.messages.push({
+            role: 'user',
+            imageDataUrl: thumb,
+            prompt: pendingPrompt,
+            selectedModels: Array.from(selectedModels),
+            timestamp: Date.now()
+        });
+        // Add system message
+        session.messages.push({
+            role: 'system',
+            results: pendingResults.slice(),
+            timestamp: Date.now()
+        });
+        // Enforce message limit
+        if (session.messages.length > MAX_MESSAGES) {
+            session.messages = session.messages.slice(-MAX_MESSAGES);
+        }
+        // Update thumb to latest
+        session.thumb = thumb;
 
+        if (isNew) {
+            sessions.unshift(session);
+            if (sessions.length > MAX_SESSIONS) sessions.length = MAX_SESSIONS;
+        }
+        saveSessionsStore(sessions);
+        renderHistory(histSearch.value.trim().toLowerCase());
+        // Highlight active
+        document.querySelectorAll('.history-item').forEach(el =>
+            el.classList.toggle('active', el.dataset.id === activeSessionId));
+        // Update header
+        document.getElementById('page-title').textContent = session.title;
+        document.getElementById('page-sub').textContent = `${session.messages.filter(m => m.role === 'user').length} mesaj`;
+    }
+
+    // ─── Management Drawer ───
+    const drawerOverlay = document.getElementById('drawer-overlay');
+    const drawer = document.getElementById('management-drawer');
+    const drawerModelList = document.getElementById('drawer-model-list');
+
+    function openDrawer() {
+        drawerOverlay.classList.remove('hidden');
+        requestAnimationFrame(() => drawerOverlay.classList.add('visible'));
+        drawer.classList.add('open');
+        loadDrawerModels();
+    }
+    function closeDrawer() {
+        drawerOverlay.classList.remove('visible');
+        drawer.classList.remove('open');
+        setTimeout(() => drawerOverlay.classList.add('hidden'), 320);
+    }
+
+    const openMgmtBtn = document.getElementById('open-management-btn');
+    if (openMgmtBtn) openMgmtBtn.addEventListener('click', openDrawer);
+    const settingsBtn = document.getElementById('settings-btn');
+    if (settingsBtn) settingsBtn.addEventListener('click', openDrawer);
+    document.getElementById('close-drawer-btn').addEventListener('click', closeDrawer);
+    drawerOverlay.addEventListener('click', closeDrawer);
+
+    async function loadDrawerModels() {
+        try {
+            const res = await fetch('/api/models');
+            const grouped = await res.json();
+            drawerModelList.innerHTML = '';
+            if (!Object.keys(grouped).length) {
+                drawerModelList.innerHTML = '<p class="hint">Henüz model eklenmemiş.</p>';
+                return;
+            }
+            for (const [groupName, models] of Object.entries(grouped)) {
+                const titleEl = document.createElement('div');
+                titleEl.className = 'model-group-title';
+                titleEl.textContent = groupName;
+                drawerModelList.appendChild(titleEl);
+                models.forEach(m => {
+                    const row = document.createElement('div');
+                    row.className = 'model-row';
+                    row.innerHTML = `
+                        <span class="model-name">${m.name}</span>
+                        <div class="model-actions">
+                            <button class="action-btn edit-btn" title="Düzenle"><i class="fa-solid fa-pen"></i></button>
+                            <button class="action-btn del del-btn" title="Sil"><i class="fa-solid fa-trash"></i></button>
+                        </div>`;
+                    row.querySelector('.edit-btn').addEventListener('click', () => openEditModal(m.key, m.name));
+                    row.querySelector('.del-btn').addEventListener('click', async () => {
+                        if (!confirm(`"${m.name}" modelini kaldırmak istiyor musunuz?`)) return;
+                        const fd = new FormData(); fd.append('key', m.key);
+                        await fetch('/api/models/remove', { method: 'DELETE', body: fd });
+                        selectedModels.delete(m.key);
+                        updateCompareBtn();
+                        await loadModels();
+                        await refreshModelsFlat();
+                        loadDrawerModels();
+                    });
+                    drawerModelList.appendChild(row);
+                });
+            }
+        } catch (e) {
+            drawerModelList.innerHTML = '<p style="color:var(--red);font-size:0.8rem">Model listesi yüklenemedi.</p>';
+        }
+    }
+
+    // ─── Add Model ───
     document.getElementById('add-model-btn').addEventListener('click', async () => {
         const name   = document.getElementById('custom-name').value.trim();
         const path   = document.getElementById('custom-path').value.trim();
@@ -538,6 +735,7 @@ document.addEventListener('DOMContentLoaded', () => {
                 document.getElementById('custom-path').value = '';
                 await loadModels();
                 await refreshModelsFlat();
+                loadDrawerModels();
             } else {
                 status.textContent = 'Hata: ' + data.message;
                 status.style.color = 'var(--red)';
@@ -551,11 +749,7 @@ document.addEventListener('DOMContentLoaded', () => {
         }
     });
 
-    // ─── Add Family Toggle ───
-    document.getElementById('toggle-add-family').addEventListener('click', () => {
-        document.getElementById('add-family-body').classList.toggle('open');
-    });
-
+    // ─── Add Family ───
     document.getElementById('add-family-btn').addEventListener('click', async () => {
         const name     = document.getElementById('family-name').value.trim();
         const desc     = document.getElementById('family-description').value.trim();
@@ -602,7 +796,7 @@ document.addEventListener('DOMContentLoaded', () => {
 
     // ─── Keyboard shortcuts ───
     document.addEventListener('keydown', e => {
-        if (e.key === 'Escape') closeModal();
+        if (e.key === 'Escape') { closeModal(); closeDrawer(); }
         if ((e.ctrlKey || e.metaKey) && e.key === 'Enter') {
             e.preventDefault();
             if (!compareBtn.disabled) compareBtn.click();
@@ -610,33 +804,31 @@ document.addEventListener('DOMContentLoaded', () => {
         }
     });
 
-    // ─── Typewriter Effect ───
-    const twPhrases = [
-        'modelleri karşılaştır',
-        'görselleri analiz et',
-        'en iyi modeli bul'
+    // ─── Fade-Rotate Subtitle Effect ───
+    const subtitlePhrases = [
+        'Farklı VLM mimarilerini tek görselle değerlendirin',
+        'Yükleme süresi, çıktı kalitesi — her şeyi kıyaslayın',
+        'Düşük VRAM ile yüksek performanslı karşılaştırma',
+        'Uzaktan algılama görsellerinizi akıllıca analiz edin'
     ];
-    const twTarget = document.getElementById('typewriter-text');
-    let twPhrase = 0, twChar = 0, twDeleting = false;
+    const subtitleEl = document.getElementById('landing-subtitle');
+    let stIdx = 0;
 
-    function typeStep() {
-        const phrase = twPhrases[twPhrase];
-        if (!twDeleting) {
-            twTarget.textContent = phrase.slice(0, ++twChar);
-            if (twChar === phrase.length) { twDeleting = true; setTimeout(typeStep, 1800); return; }
-            setTimeout(typeStep, 75 + Math.random() * 35);
-        } else {
-            twTarget.textContent = phrase.slice(0, --twChar);
-            if (twChar === 0) {
-                twDeleting = false;
-                twPhrase = (twPhrase + 1) % twPhrases.length;
-                setTimeout(typeStep, 380);
-                return;
-            }
-            setTimeout(typeStep, 38 + Math.random() * 20);
-        }
+    function showSubtitle() {
+        subtitleEl.classList.remove('fade-in');
+        subtitleEl.classList.add('fade-out');
+        setTimeout(() => {
+            subtitleEl.textContent = subtitlePhrases[stIdx];
+            subtitleEl.classList.remove('fade-out');
+            subtitleEl.classList.add('fade-in');
+            stIdx = (stIdx + 1) % subtitlePhrases.length;
+        }, 450);
     }
-    setTimeout(typeStep, 600);
+    // Initial show
+    subtitleEl.textContent = subtitlePhrases[0];
+    subtitleEl.classList.add('fade-in');
+    stIdx = 1;
+    setInterval(showSubtitle, 4000);
 
     // ─── Landing Screen ───
     const landingScreen      = document.getElementById('landing-screen');
@@ -649,6 +841,8 @@ document.addEventListener('DOMContentLoaded', () => {
     const landingPrompt      = document.getElementById('landing-prompt');
     const landingCompareBtn  = document.getElementById('landing-compare-btn');
     const appShell           = document.getElementById('app-shell');
+
+    landingPrompt.addEventListener('input', () => enforcePromptLimit(landingPrompt));
 
     function updateLandingCompareBtn() {
         landingCompareBtn.disabled = !(currentFile && selectedModels.size > 0);
@@ -663,6 +857,7 @@ document.addEventListener('DOMContentLoaded', () => {
             landingUploadInner.classList.add('hidden');
             landingPreview.classList.remove('hidden');
             landingRemoveImg.classList.remove('hidden');
+            landingDrop.classList.add('has-preview');
             updateLandingCompareBtn();
         };
     }
@@ -675,6 +870,7 @@ document.addEventListener('DOMContentLoaded', () => {
         landingUploadInner.classList.remove('hidden');
         landingPreview.classList.add('hidden');
         landingRemoveImg.classList.add('hidden');
+        landingDrop.classList.remove('has-preview');
         imagePreview.src = '';
         uploadPH.classList.remove('hidden');
         imagePreview.classList.add('hidden');
@@ -701,10 +897,11 @@ document.addEventListener('DOMContentLoaded', () => {
         document.querySelectorAll('.model-row').forEach(r => { r.classList.remove('selected'); r.querySelector('input').checked = false; });
         landingPrompt.value = '';
         promptInput.value = '';
-        resultCards.innerHTML = '';
+        updateCharCounter();
+        chatFeed.innerHTML = '';
         resultsEmpty.classList.remove('hidden');
-        progressWrap.classList.add('hidden');
-        activeHistoryId = null;
+        if (progressWrap) progressWrap.classList.add('hidden');
+        activeSessionId = null;
         document.querySelectorAll('.history-item').forEach(el => el.classList.remove('active'));
         updateCompareBtn();
     }
@@ -753,56 +950,75 @@ document.addEventListener('DOMContentLoaded', () => {
     landingInput.addEventListener('change', function () { if (this.files.length > 0) setLandingFile(this.files[0]); });
     landingRemoveImg.addEventListener('click', e => { e.stopPropagation(); clearLandingFile(); });
 
+    // ─── Fullscreen Lightbox ───
+    function openLightbox(src) {
+        const overlay = document.createElement('div');
+        overlay.className = 'fullscreen-preview';
+        overlay.innerHTML = `
+            <span class="lightbox-close-hint"><i class="fa-solid fa-xmark"></i> Kapat</span>
+            <img src="${src}" alt="Önizleme">`;
+        document.body.appendChild(overlay);
+        document.body.style.overflow = 'hidden';
+
+        function closeLightbox() {
+            overlay.classList.add('closing');
+            document.body.style.overflow = '';
+            setTimeout(() => overlay.remove(), 260);
+        }
+
+        overlay.addEventListener('click', closeLightbox);
+        const escHandler = (e) => {
+            if (e.key === 'Escape') { closeLightbox(); document.removeEventListener('keydown', escHandler); }
+        };
+        document.addEventListener('keydown', escHandler);
+    }
+
+    landingPreview.addEventListener('click', (e) => {
+        e.stopPropagation();
+        if (landingPreview.src) openLightbox(landingPreview.src);
+    });
+
     landingCompareBtn.addEventListener('click', () => {
         if (!currentFile || selectedModels.size === 0) return;
+        landingPrompt.value = landingPrompt.value.slice(0, 30);
         promptInput.value = landingPrompt.value.trim();
+        updateCharCounter();
         exitLanding();
         setTimeout(() => runComparison(), 180);
     });
 
-    // ─── History Management ───
-    const HISTORY_KEY = 'vlm-studio-history';
-    const MAX_HISTORY = 60;
-
+    // ─── Session Management ───
     const histSidebar    = document.getElementById('history-sidebar');
     const histList       = document.getElementById('history-list');
     const histSearch     = document.getElementById('history-search');
     const histCollapseBtn = document.getElementById('history-collapse-btn');
     const histExpandBtn  = document.getElementById('history-expand-btn');
-    const histNewBtn     = document.getElementById('history-new-btn');
+    const histHomeBtn    = document.getElementById('history-home-btn');
+    const histNewChatBtn = document.getElementById('history-new-chat-btn');
     const histClearBtn   = document.getElementById('history-clear-btn');
 
-    function getHistory() {
-        try { return JSON.parse(localStorage.getItem(HISTORY_KEY) || '[]'); }
+    function getSessions() {
+        try { return JSON.parse(localStorage.getItem(SESSIONS_KEY) || '[]'); }
         catch { return []; }
     }
 
-    function saveHistoryStore(items) {
-        try { localStorage.setItem(HISTORY_KEY, JSON.stringify(items)); }
+    function saveSessionsStore(items) {
+        try { localStorage.setItem(SESSIONS_KEY, JSON.stringify(items)); }
         catch(e) {
-            // If quota exceeded, trim oldest half
             const half = items.slice(0, Math.floor(items.length / 2));
-            try { localStorage.setItem(HISTORY_KEY, JSON.stringify(half)); } catch(_) {}
+            try { localStorage.setItem(SESSIONS_KEY, JSON.stringify(half)); } catch(_) {}
         }
     }
 
-    function addToHistory(item) {
-        const history = getHistory();
-        history.unshift(item);
-        if (history.length > MAX_HISTORY) history.length = MAX_HISTORY;
-        saveHistoryStore(history);
-        renderHistory(histSearch.value.trim().toLowerCase());
-    }
-
-    function deleteHistoryItem(id) {
-        const history = getHistory().filter(h => h.id !== id);
-        saveHistoryStore(history);
-        if (activeHistoryId === id) {
-            activeHistoryId = null;
-            resultCards.innerHTML = '';
+    function deleteSession(id) {
+        const sessions = getSessions().filter(s => s.id !== id);
+        saveSessionsStore(sessions);
+        if (activeSessionId === id) {
+            activeSessionId = null;
+            chatFeed.innerHTML = '';
             resultsEmpty.classList.remove('hidden');
             document.getElementById('page-title').textContent = 'Sonuçlar';
-            document.getElementById('page-sub').textContent = 'Modellerin çıktıları burada görünecek';
+            document.getElementById('page-sub').textContent = 'Sohbet başlatın veya geçmişten seçin';
         }
         renderHistory(histSearch.value.trim().toLowerCase());
     }
@@ -872,79 +1088,114 @@ document.addEventListener('DOMContentLoaded', () => {
         return card;
     }
 
-    function loadHistoryItem(item) {
-        exitLanding();
-        activeHistoryId = item.id;
-        document.querySelectorAll('.history-item').forEach(el =>
-            el.classList.toggle('active', el.dataset.id === item.id));
-
-        imagePreview.src = item.imageDataUrl;
-        uploadPH.classList.add('hidden');
-        imagePreview.classList.remove('hidden');
-        removeImageBtn.classList.remove('hidden');
-        promptInput.value = item.prompt || '';
-
-        const title = item.prompt || item.modelNames?.join(', ') || 'Karşılaştırma';
-        document.getElementById('page-title').textContent = title.length > 60 ? title.slice(0, 60) + '…' : title;
-        document.getElementById('page-sub').textContent =
-            `${item.modelNames?.length || item.models?.length || 0} model · ${formatRelTime(item.timestamp)}`;
-
-        progressWrap.classList.add('hidden');
-        resultsEmpty.classList.add('hidden');
-        resultCards.innerHTML = '';
-        item.results.forEach((r, i) => resultCards.appendChild(buildResultCard(r, i)));
+    function renderChatFeed(session) {
+        chatFeed.innerHTML = '';
+        const messages = session.messages;
+        for (let i = 0; i < messages.length; i++) {
+            const msg = messages[i];
+            if (msg.role === 'user') {
+                const group = document.createElement('div');
+                group.className = 'chat-message-group';
+                const promptDisplay = msg.prompt || 'Görüntüyü açıkla';
+                group.innerHTML = `
+                    <div class="chat-user-bubble">
+                        <img class="chat-user-image" src="${msg.imageDataUrl}" alt="Görsel">
+                        <div class="chat-user-content">
+                            <span class="chat-user-prompt">${promptDisplay}</span>
+                            <span class="chat-user-models"><i class="fa-solid fa-layer-group"></i> ${(msg.selectedModels || []).join(', ')}</span>
+                        </div>
+                    </div>
+                    <div class="chat-model-results"></div>`;
+                // Lightbox
+                group.querySelector('.chat-user-image').addEventListener('click', () => {
+                    openLightbox(msg.imageDataUrl);
+                });
+                // System results follow immediately
+                const sysMsg = messages[i + 1];
+                if (sysMsg && sysMsg.role === 'system') {
+                    const resultsDiv = group.querySelector('.chat-model-results');
+                    sysMsg.results.forEach((r, idx) => resultsDiv.appendChild(buildResultCard(r, idx)));
+                    i++; // Skip system message
+                }
+                chatFeed.appendChild(group);
+            }
+        }
     }
 
-    function renderHistoryItem(item) {
+    function loadSession(session) {
+        exitLanding();
+        activeSessionId = session.id;
+        document.querySelectorAll('.history-item').forEach(el =>
+            el.classList.toggle('active', el.dataset.id === session.id));
+
+        document.getElementById('page-title').textContent = session.title;
+        const userMsgCount = session.messages.filter(m => m.role === 'user').length;
+        document.getElementById('page-sub').textContent = `${userMsgCount} mesaj · ${formatRelTime(session.createdAt)}`;
+
+        if (progressWrap) progressWrap.classList.add('hidden');
+        resultsEmpty.classList.add('hidden');
+        renderChatFeed(session);
+    }
+
+    function startNewSession() {
+        activeSessionId = null;
+        chatFeed.innerHTML = '';
+        resultsEmpty.classList.remove('hidden');
+        if (progressWrap) progressWrap.classList.add('hidden');
+        document.getElementById('page-title').textContent = 'Sonuçlar';
+        document.getElementById('page-sub').textContent = 'Sohbet başlatın veya geçmişten seçin';
+        document.querySelectorAll('.history-item').forEach(el => el.classList.remove('active'));
+    }
+
+    function renderHistoryItem(session) {
         const el = document.createElement('div');
-        el.className = 'history-item' + (item.id === activeHistoryId ? ' active' : '');
-        el.dataset.id = item.id;
-        const title = item.prompt || item.modelNames?.join(', ') || 'Karşılaştırma';
-        const meta  = `${item.modelNames?.length || item.models?.length || 0} model · ${formatRelTime(item.timestamp)}`;
+        el.className = 'history-item' + (session.id === activeSessionId ? ' active' : '');
+        el.dataset.id = session.id;
+        const userMsgs = session.messages.filter(m => m.role === 'user').length;
+        const meta = `${userMsgs} mesaj · ${formatRelTime(session.createdAt)}`;
         el.innerHTML = `
-            <div class="history-thumb"><img src="${item.imageDataUrl}" alt=""></div>
+            <div class="history-thumb"><img src="${session.thumb}" alt=""></div>
             <div class="history-item-info">
-                <div class="history-item-title">${title}</div>
+                <div class="history-item-title">${session.title}</div>
                 <div class="history-item-meta">${meta}</div>
             </div>
             <button class="history-item-del" title="Sil"><i class="fa-solid fa-trash"></i></button>`;
         el.addEventListener('click', e => {
             if (e.target.closest('.history-item-del')) return;
-            loadHistoryItem(item);
+            loadSession(session);
         });
         el.querySelector('.history-item-del').addEventListener('click', e => {
             e.stopPropagation();
-            deleteHistoryItem(item.id);
+            deleteSession(session.id);
         });
         return el;
     }
 
     function renderHistory(query = '') {
-        const all = getHistory();
+        const all = getSessions();
         const items = query
-            ? all.filter(h => (h.prompt || '').toLowerCase().includes(query) ||
-                              (h.modelNames || []).some(n => n.toLowerCase().includes(query)))
+            ? all.filter(s => (s.title || '').toLowerCase().includes(query))
             : all;
 
         histList.innerHTML = '';
         if (!items.length) {
             histList.innerHTML = `<div class="history-empty-state">
                 <i class="fa-regular fa-clock"></i>
-                <span>${query ? 'Eşleşme bulunamadı' : 'Henüz karşılaştırma yok'}</span>
+                <span>${query ? 'Eşleşme bulunamadı' : 'Henüz sohbet yok'}</span>
             </div>`;
             return;
         }
         const groups = {};
-        items.forEach(h => {
-            const label = getDateLabel(h.timestamp);
+        items.forEach(s => {
+            const label = getDateLabel(s.createdAt);
             if (!groups[label]) groups[label] = [];
-            groups[label].push(h);
+            groups[label].push(s);
         });
         const ORDER = ['Bugün', 'Dün', 'Bu Hafta', 'Bu Ay', 'Daha Önce'];
         ORDER.filter(k => groups[k]).forEach(label => {
             const g = document.createElement('div');
             g.innerHTML = `<div class="history-group-label">${label}</div>`;
-            groups[label].forEach(h => g.appendChild(renderHistoryItem(h)));
+            groups[label].forEach(s => g.appendChild(renderHistoryItem(s)));
             histList.appendChild(g);
         });
     }
@@ -965,21 +1216,28 @@ document.addEventListener('DOMContentLoaded', () => {
         });
     }
 
-    // History sidebar toggle
+    // Sidebar toggle
     histCollapseBtn.addEventListener('click', () => histSidebar.classList.add('collapsed'));
     histExpandBtn.addEventListener('click',   () => histSidebar.classList.remove('collapsed'));
 
-    histNewBtn.addEventListener('click', showLanding);
+    // Home button → landing
+    histHomeBtn.addEventListener('click', showLanding);
+
+    // New chat button
+    histNewChatBtn.addEventListener('click', () => {
+        exitLanding();
+        startNewSession();
+    });
 
     histClearBtn.addEventListener('click', () => {
         if (!confirm('Tüm geçmiş silinecek. Emin misiniz?')) return;
-        saveHistoryStore([]);
+        saveSessionsStore([]);
         renderHistory();
-        activeHistoryId = null;
-        resultCards.innerHTML = '';
+        activeSessionId = null;
+        chatFeed.innerHTML = '';
         resultsEmpty.classList.remove('hidden');
         document.getElementById('page-title').textContent = 'Sonuçlar';
-        document.getElementById('page-sub').textContent = 'Modellerin çıktıları burada görünecek';
+        document.getElementById('page-sub').textContent = 'Sohbet başlatın veya geçmişten seçin';
     });
 
     histSearch.addEventListener('input', () => renderHistory(histSearch.value.trim().toLowerCase()));

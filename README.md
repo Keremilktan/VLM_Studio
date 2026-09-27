@@ -93,3 +93,7 @@ Tarayıcınızda **`http://localhost:8000`** veya **`http://127.0.0.1:8000`** ad
 ## 📝 Lisans
 
 Bu proje açık kaynaklıdır. Detaylar için lisans dosyasına göz atabilirsiniz.
+
+# 👁️ VLM Studio — Multi-Container Web UI for Vision-Language Models
+
+VLM Studio, uzaktan algılama ve uydu görüntüleri üzerinde eğitilmiş **Vision-Language Modellerinin (VLM)** (Qwen3.5, RS-LLaVA vb.) yanıtlarını gerçek zamanlı karşılaştırmak ve görsel soru-cevap (VQA) analizleri yürütmek için geliştirilmiş web tabanlı bir arayüz ve konteyner mimarisidir.
